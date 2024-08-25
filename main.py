@@ -1,15 +1,18 @@
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F #pip install aiogram
 from aiogram.types import (InlineKeyboardButton,
                            InlineKeyboardMarkup, Message, CallbackQuery)
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command, StateFilter
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from google.oauth2 import service_account
+from google.oauth2 import service_account #pip install --upgrade google-api-python-client google-auth-httplib2 google-auth-oauthlib
 from googleapiclient.discovery import build
 
 import json
 
+# Авторизация Бота
+bot = Bot(token=) #Введите свой токен
+dp = Dispatcher()
 
 # Все функции Aiogram
 class Commands(StatesGroup):
@@ -31,7 +34,6 @@ class Commands(StatesGroup):
     name_calendar = State()
 
 
-# Авторизация в Google
 class GoogleCalendar:
     SCOPES = ["https://www.googleapis.com/auth/calendar"]
     FILE_PATH = 'credentials.json'
@@ -42,11 +44,69 @@ class GoogleCalendar:
         )
         self.service = build('calendar', 'v3', credentials=credentials)
 
+    def insert_calendar(self, calendar_list_entry): #Добавление календаря
+        self.service.calendarList().insert(body=calendar_list_entry).execute()
 
-# Авторизация Бота
+    def new_event(self, event_dict: dict, callback: str): #Создание мероприятия
+        start = event_dict['start']
+        calendar_id = event_dict["calendars"][int(callback)]["id"]
+        if event_dict['time']:
+            start_time = event_dict['start_time']
+            end_time = event_dict['end_time']
+            date_start = {'dateTime': f'20{start[-2:]}-{start[3:5]}-{start[:2]}T{start_time}:00+03:00'}
+            date_end = {'dateTime': f'20{start[-2:]}-{start[3:5]}-{start[:2]}T{end_time}:00+03:00'}
+        else:
+            date_start = {'date': f'20{start[-2:]}-{start[3:5]}-{start[:2]}',
+                          'timeZone': 'Europe/Moscow'
+                          }
+            date_end = {'date': f'20{start[-2:]}-{start[3:5]}-{start[:2]}',
+                        'timeZone': 'Europe/Moscow'
+                        }
+        event = {
+            'summary': event_dict['name'],
+            'description': 'описание',
+            'start': date_start,
+            'end': date_end
+        }
+        self.service.events().insert(calendarId=calendar_id, body=event).execute()
+
+    def delete_event(self, event: dict): #Удаление мероприятия
+        self.service.events().delete(calendarId=event["calendar"],
+                                    eventId=event["id"]).execute()
+
+    def look_event(self, data_start, data_end: str, calendars, delete: bool): #Просмотр мероприятия
+        calendars_events = []
+        long = 0
+        for i in calendars:
+            events = self.service.events().list(calendarId=i["id"],
+                                               timeMax=f'20{data_end[-2:]}-{data_end[3:5]}-{data_end[:2]}T21:00:00+03:00',
+                                               timeMin=f'20{data_start[-2:]}-{data_start[3:5]}-{data_start[:2]}T00:00:00+03:00'
+                                               ).execute()
+            events = events['items']
+            long += len(events)
+            calendars_events.append(events)
+        answer = ''
+        event_dict = []
+        longs = long
+        for j in range(len(calendars_events)):
+            events = calendars_events[j]
+            for i in range(len(events)):
+                if "dateTime" in events[i]["start"]:
+                    date = f'{events[i]["start"]["dateTime"][11:16]} - {events[i]["end"]["dateTime"][11:16]} {events[i]["start"]["dateTime"][8:10]}.{events[i]["start"]["dateTime"][5:7]}'
+                else:
+                    date = f'{events[i]["start"]["date"][-2:]}.{events[i]["start"]["date"][5:7]}'
+                answer = f'{long}. {events[i]["summary"]}, {date},  {calendars[j]["name"]}' + '\n' + answer
+                long -= 1
+                if delete:
+                    evcal = {"id": events[i]["id"], "calendar": calendars[j]["id"]}
+                    event_dict.append(evcal)
+        if delete:
+            return [longs, event_dict, answer]
+        else:
+            return answer
+
+
 obj = GoogleCalendar()
-bot = Bot(token="7420151175:AAHSnw_VgB-Gtkd7dBEAuSby_c36jjY_uCk")
-dp = Dispatcher()
 
 
 # Меню
@@ -84,20 +144,20 @@ async def menu(message: Message, state: Commands):
     )
     await state.set_state(Commands.menu_choice)
 
-
+#Добавление календаря
 @dp.callback_query(StateFilter(Commands.menu_choice),
                    F.data.in_(['new_calendar']))
 async def process_new_calendar(callback: CallbackQuery, state: Commands):
     await callback.message.answer(text='Чтоб добавить новый календарь, открой для "watsonhall@watsonhallbot.iam.gserviceaccount.com" доступ\nСкопируй и отправь сюда Идентификатор календаря')
-    await state. set_state(Commands.new_calendar)
+    await state.set_state(Commands.new_calendar)
 
-
+#Добавление календаря
 @dp.message(StateFilter(Commands.new_calendar))
 async def process_new_calendar_2(message: Message, state: Commands):
     id_calendar = str(message.text)
     try:
         calendar_list_entry = {'id': id_calendar}
-        obj.service.calendarList().insert(body=calendar_list_entry).execute()
+        obj.insert_calendar(calendar_list_entry)
     except:
         await message.answer(text='Произошла ошибка,  попробуйте еще раз!')
         await process_new_calendar(message, state)
@@ -112,6 +172,7 @@ async def process_new_calendar_2(message: Message, state: Commands):
     await message.answer(text=f'Ваш календраь называется:{calendar["summary"]}\nЕсли хотите оставить название без изменений, нажмите кнопку ниже, иначе введите новое название',
                          reply_markup=keyboard)
     await state.set_state(Commands.name_calendar)
+
 
 @dp.callback_query(StateFilter(Commands.name_calendar),
                    F.data.in_(['dont_change']))
@@ -184,28 +245,7 @@ async def process_choice_calendar(message: Message, state: Commands):
 async def process_create_events(callback: CallbackQuery, state: Commands):
     # Формирование нового мероприятия
     event_dict = await state.get_data()
-    calendar_id = event_dict["calendars"][int(callback.data)]["id"]
-    start = event_dict['start']
-    if event_dict['time']:
-        start_time = event_dict['start_time']
-        end_time = event_dict['end_time']
-        date_start = {'dateTime': f'20{start[-2:]}-{start[3:5]}-{start[:2]}T{start_time}:00+03:00'}
-        date_end = {'dateTime': f'20{start[-2:]}-{start[3:5]}-{start[:2]}T{end_time}:00+03:00'}
-    else:
-        date_start = {'date': f'20{start[-2:]}-{start[3:5]}-{start[:2]}',
-                      'timeZone': 'Europe/Moscow'
-                      }
-        date_end = {'date': f'20{start[-2:]}-{start[3:5]}-{start[:2]}',
-                    'timeZone': 'Europe/Moscow'
-                    }
-
-    event = {
-        'summary': event_dict['name'],
-        'description': 'описание',
-        'start': date_start,
-        'end': date_end
-    }
-    obj.service.events().insert(calendarId=calendar_id, body=event).execute()
+    obj.new_event(event_dict, callback.data)
     await callback.message.answer('Мероприятие создано!')
     await menu(callback.message, state)
 
@@ -260,36 +300,13 @@ async def process_delete_event_data(callback: CallbackQuery, state: Commands):
 @dp.message(StateFilter(Commands.delete_event_data))
 async def process_delete_event_choice(message: Message, state: Commands):
     data = message.text
-    calendars_events = []
-    long = 0
     with open('BD.json') as f:
         calendars = json.load(f)
     calendars = calendars[str(message.chat.id)]
-    for i in calendars:
-        events = obj.service.events().list(calendarId=i["id"],
-                                           timeMax=f'20{data[-2:]}-{data[3:5]}-{data[:2]}T21:00:00+03:00',
-                                           timeMin=f'20{data[-2:]}-{data[3:5]}-{data[:2]}T00:00:00+03:00'
-                                           ).execute()
-        events = events['items']
-        long += len(events)
-        calendars_events.append(events)
-    await state.update_data(events=events)
-    await state.update_data(long=long)
-    answer = ''
-    event_dict = []
-    for j in range(len(calendars_events)):
-        events = calendars_events[j]
-        for i in range(len(events)):
-            if "dateTime" in events[i]["start"]:
-                date = f'{events[i]["start"]["dateTime"][11:16]} - {events[i]["end"]["dateTime"][11:16]} {events[i]["start"]["dateTime"][8:10]}.{events[i]["start"]["dateTime"][5:7]}'
-            else:
-                date = f'{events[i]["start"]["date"][-2:]}.{events[i]["start"]["date"][5:7]}'
-            answer = f'{long}. {events[i]["summary"]}, {date},  {calendars[j]["name"]}' + '\n' + answer
-            evcal = {"id":events[i]["id"], "calendar":calendars[j]["id"]}
-            event_dict.append(evcal)
-            long -= 1
-    await state.update_data(event_dict=event_dict)
-    await message.answer(text=answer)
+    answer = obj.look_event(data, data, calendars, True)
+    await state.update_data(long=answer[0])
+    await state.update_data(event_dict=answer[1])
+    await message.answer(text=answer[2])
     await state.set_state(Commands.delete_event)
 
 
@@ -298,8 +315,7 @@ async def process_delete_event_choice(message: Message, state: Commands):
 async def process_delete_event(message: Message, state: Commands):
     event = await state.get_data()
     id_event = abs(int(message.text) - int(event['long']))
-    obj.service.events().delete(calendarId=event["event_dict"][id_event]["calendar"],
-                                eventId=event["event_dict"][id_event]["id"]).execute()
+    obj.delete_event(event["event_dict"][id_event])
     await message.answer(text='Выполено')
     await menu(message, state)
 
@@ -331,33 +347,11 @@ async def process_look_event_data_end(message: Message, state: Commands):
     with open('BD.json') as f:
         calendars = json.load(f)
     calendars = calendars[str(message.chat.id)]
-    await state.update_data(end_look=message.text)
     events_dict = await state.get_data()
-    data_start = events_dict['start_look']
-    data_end = events_dict['end_look']
-    calendars_events = []
-    long = 0
-    for i in calendars:
-        events = obj.service.events().list(calendarId=i["id"],
-                                           timeMax=f'20{data_end[-2:]}-{data_end[3:5]}-{data_end[:2]}T21:00:00+03:00',
-                                           timeMin=f'20{data_start[-2:]}-{data_start[3:5]}-{data_start[:2]}T00:00:00+03:00'
-                                           ).execute()
-        events = events['items']
-        long += len(events)
-        calendars_events.append(events)
-    answer = ''
-    for j in range(len(calendars_events)):
-        events = calendars_events[j]
-        for i in range(len(events)):
-            if "dateTime" in events[i]["start"]:
-                date = f'{events[i]["start"]["dateTime"][11:16]} - {events[i]["end"]["dateTime"][11:16]} {events[i]["start"]["dateTime"][8:10]}.{events[i]["start"]["dateTime"][5:7]}'
-            else:
-                date = f'{events[i]["start"]["date"][-2:]}.{events[i]["start"]["date"][5:7]}'
-            answer = f'{long}. {events[i]["summary"]}, {date},  {calendars[j]["name"]}' + '\n' + answer
-            long -= 1
+    answer = obj.look_event(data_start=events_dict['start_look'], data_end=message.text, calendars=calendars, delete=False)
     await message.answer(text=answer)
     await menu(message, state)
 
-
+#Поллинг бота
 if __name__ == '__main__':
     dp.run_polling(bot)
